@@ -78,6 +78,16 @@ func workspaceAPI(r chi.Router) {
 		})
 	})
 
+	// API key management for Claude Code integration
+	r.Group(func(r chi.Router) {
+		r.Use(RequireAdmin())
+		r.Get("/api-keys", getAPIKeys)
+		r.Post("/api-keys", createAPIKey)
+		r.Route("/api-keys/{ID}", func(r chi.Router) {
+			r.Delete("/", deleteAPIKey)
+		})
+	})
+
 	r.Group(func(r chi.Router) {
 
 		r.Route("/",
@@ -1264,4 +1274,61 @@ type changeAnnotationRequest struct {
 
 func (p *changeAnnotationRequest) Bind(r *http.Request) error {
 	return nil
+}
+
+// API Key management for Claude Code
+
+func getAPIKeys(w http.ResponseWriter, r *http.Request) {
+	s := GetEnv(r).Service
+	keys := s.GetAPIKeysByWorkspace()
+	render.JSON(w, r, keys)
+}
+
+type createAPIKeyRequest struct {
+	Name string `json:"name"`
+}
+
+func (p *createAPIKeyRequest) Bind(r *http.Request) error {
+	return nil
+}
+
+type createAPIKeyResponse struct {
+	APIKey   *APIKey `json:"apiKey"`
+	RawKey   string  `json:"rawKey"`
+	Warning  string  `json:"warning"`
+}
+
+func createAPIKey(w http.ResponseWriter, r *http.Request) {
+	data := &createAPIKeyRequest{}
+	if err := render.Bind(r, data); err != nil {
+		_ = render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
+
+	name := data.Name
+	if name == "" {
+		name = "claude-code"
+	}
+
+	s := GetEnv(r).Service
+	apiKey, rawKey, err := s.CreateAPIKey(name)
+	if err != nil {
+		_ = render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
+
+	render.JSON(w, r, createAPIKeyResponse{
+		APIKey:  apiKey,
+		RawKey:  rawKey,
+		Warning: "Store this key securely. It will only be shown once.",
+	})
+}
+
+func deleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "ID")
+	err := GetEnv(r).Service.DeleteAPIKey(id)
+	if err != nil {
+		_ = render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
 }

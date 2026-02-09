@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -157,6 +161,18 @@ type Service interface {
 	CreatePersonaWithID(id string, projectID string, avatar string, name string, role string, description string, workflowID string, workflowPersonaID string) (*Persona, error)
 	DeletePersona(id string) error
 	UpdatePersona(id string, avatar string, name string, role string, description string) (*Persona, error)
+
+	// API Keys for Claude Code integration
+	CreateAPIKey(name string) (*APIKey, string, error)
+	ValidateAPIKey(keyHash string) (*APIKey, *Member, error)
+	GetAPIKeysByWorkspace() []*APIKey
+	DeleteAPIKey(id string) error
+	UpdateAPIKeyLastUsed(id string)
+
+	// Claude Code integration
+	GetProjectForClaude(projectID string) (*ClaudeProjectResponse, error)
+	UpdateFeatureStatusForClaude(featureID string, status string) (*Feature, error)
+	UpdateFeatureAnnotationsForClaude(featureID string, annotations string) (*Feature, error)
 }
 
 type service struct {
@@ -2260,4 +2276,253 @@ func validAvatar(avatar string) bool {
 		return true
 	}
 	return false
+}
+
+// API Keys for Claude Code integration
+
+func generateAPIKey() (string, string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", err
+	}
+	key := "fm_" + hex.EncodeToString(bytes)
+	hash := sha256.Sum256([]byte(key))
+	hashStr := hex.EncodeToString(hash[:])
+	return key, hashStr, nil
+}
+
+func HashAPIKey(key string) string {
+	hash := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(hash[:])
+}
+
+func (s *service) CreateAPIKey(name string) (*APIKey, string, error) {
+	name = govalidator.Trim(name, "")
+	if len(name) == 0 {
+		name = "claude-code"
+	}
+	if len(name) > 100 {
+		return nil, "", errors.New("name too long")
+	}
+
+	key, hash, err := generateAPIKey()
+	if err != nil {
+		return nil, "", errors.Wrap(err, "failed to generate API key")
+	}
+
+	apiKey := &APIKey{
+		WorkspaceID: s.Member.WorkspaceID,
+		ID:          uuid.Must(uuid.NewV4(), nil).String(),
+		MemberID:    s.Member.ID,
+		KeyHash:     hash,
+		Name:        name,
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	s.r.StoreAPIKey(apiKey)
+
+	return apiKey, key, nil
+}
+
+func (s *service) ValidateAPIKey(keyHash string) (*APIKey, *Member, error) {
+	apiKey, err := s.r.GetAPIKeyByHash(keyHash)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "invalid API key")
+	}
+
+	member, err := s.r.GetMember(apiKey.WorkspaceID, apiKey.MemberID)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "member not found for API key")
+	}
+
+	return apiKey, member, nil
+}
+
+func (s *service) GetAPIKeysByWorkspace() []*APIKey {
+	keys, err := s.r.FindAPIKeysByWorkspace(s.Member.WorkspaceID)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+	return keys
+}
+
+func (s *service) DeleteAPIKey(id string) error {
+	s.r.DeleteAPIKey(s.Member.WorkspaceID, id)
+	return nil
+}
+
+func (s *service) UpdateAPIKeyLastUsed(id string) {
+	s.r.UpdateAPIKeyLastUsed(s.Member.WorkspaceID, id)
+}
+
+// Claude Code integration
+
+func (s *service) GetProjectForClaude(projectID string) (*ClaudeProjectResponse, error) {
+	project, err := s.r.GetProject(s.Member.WorkspaceID, projectID)
+	if err != nil {
+		return nil, errors.Wrap(err, "project not found")
+	}
+
+	milestones, err := s.r.FindMilestonesByProject(s.Member.WorkspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	workflows, err := s.r.FindWorkflowsByProject(s.Member.WorkspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	subworkflows, err := s.r.FindSubWorkflowsByProject(s.Member.WorkspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	features, err := s.r.FindFeaturesByProject(s.Member.WorkspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	comments, err := s.r.FindFeatureCommentsByProject(s.Member.WorkspaceID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build lookup maps
+	milestoneMap := make(map[string]*Milestone)
+	milestoneRankMap := make(map[string]int)
+	for i, m := range milestones {
+		milestoneMap[m.ID] = m
+		milestoneRankMap[m.ID] = i + 1
+	}
+
+	workflowMap := make(map[string]*Workflow)
+	workflowRankMap := make(map[string]int)
+	for i, w := range workflows {
+		workflowMap[w.ID] = w
+		workflowRankMap[w.ID] = i + 1
+	}
+
+	subworkflowMap := make(map[string]*SubWorkflow)
+	subworkflowToWorkflow := make(map[string]string)
+	for _, sw := range subworkflows {
+		subworkflowMap[sw.ID] = sw
+		subworkflowToWorkflow[sw.ID] = sw.WorkflowID
+	}
+
+	commentsByFeature := make(map[string][]*FeatureComment)
+	for _, c := range comments {
+		commentsByFeature[c.FeatureID] = append(commentsByFeature[c.FeatureID], c)
+	}
+
+	// Build Claude features with context
+	claudeFeatures := make([]ClaudeFeature, 0, len(features))
+	for _, f := range features {
+		milestone := milestoneMap[f.MilestoneID]
+		subworkflow := subworkflowMap[f.SubWorkflowID]
+		workflowID := subworkflowToWorkflow[f.SubWorkflowID]
+		workflow := workflowMap[workflowID]
+
+		if milestone == nil || subworkflow == nil || workflow == nil {
+			continue
+		}
+
+		// Calculate priority based on milestone and workflow rank
+		priority := milestoneRankMap[f.MilestoneID]*1000 + workflowRankMap[workflowID]
+
+		// Build comments
+		featureComments := commentsByFeature[f.ID]
+		claudeComments := make([]ClaudeComment, 0, len(featureComments))
+		for _, c := range featureComments {
+			claudeComments = append(claudeComments, ClaudeComment{
+				Author: c.CreatedByName,
+				Text:   c.Post,
+				Date:   c.CreatedAt.Format("2006-01-02"),
+			})
+		}
+
+		cf := ClaudeFeature{
+			ID:          f.ID,
+			Title:       f.Title,
+			Description: f.Description,
+			Status:      f.Status,
+			Estimate:    f.Estimate,
+			Annotations: f.Annotations,
+			Color:       f.Color,
+			Priority:    priority,
+			Milestone: ClaudeMilestone{
+				ID:    milestone.ID,
+				Title: milestone.Title,
+				Rank:  milestoneRankMap[milestone.ID],
+			},
+			Workflow: ClaudeWorkflow{
+				ID:          workflow.ID,
+				Title:       workflow.Title,
+				Description: workflow.Description,
+				Rank:        workflowRankMap[workflow.ID],
+			},
+			SubWorkflow: ClaudeSubWorkflow{
+				ID:    subworkflow.ID,
+				Title: subworkflow.Title,
+			},
+			Comments: claudeComments,
+		}
+		claudeFeatures = append(claudeFeatures, cf)
+	}
+
+	// Sort by priority
+	sort.Slice(claudeFeatures, func(i, j int) bool {
+		return claudeFeatures[i].Priority < claudeFeatures[j].Priority
+	})
+
+	instructions := ClaudeInstructions{
+		Clarification: "Before implementing any feature, use the AskUserQuestion tool to clarify requirements. Ask about: acceptance criteria, edge cases, error handling, and integration points.",
+		Workflow:      "Process features in priority order within each milestone. Update status to 'IN_PROGRESS' when starting, 'CLOSED' when complete.",
+		StatusValues:  []string{"OPEN", "IN_PROGRESS", "CLOSED"},
+	}
+
+	return &ClaudeProjectResponse{
+		Instructions: instructions,
+		Project:      *project,
+		Features:     claudeFeatures,
+	}, nil
+}
+
+func (s *service) UpdateFeatureStatusForClaude(featureID string, status string) (*Feature, error) {
+	status = strings.ToUpper(govalidator.Trim(status, ""))
+
+	if status != "OPEN" && status != "IN_PROGRESS" && status != "CLOSED" {
+		return nil, errors.New("invalid status - must be OPEN, IN_PROGRESS, or CLOSED")
+	}
+
+	f, err := s.r.GetFeature(s.Member.WorkspaceID, featureID)
+	if err != nil {
+		return nil, errors.Wrap(err, "feature not found")
+	}
+
+	f.Status = status
+	f.LastModified = time.Now().UTC()
+	f.LastModifiedByName = "Claude Code"
+
+	s.r.StoreFeature(f)
+
+	return f, nil
+}
+
+func (s *service) UpdateFeatureAnnotationsForClaude(featureID string, annotations string) (*Feature, error) {
+	annotations = govalidator.Trim(annotations, "")
+
+	f, err := s.r.GetFeature(s.Member.WorkspaceID, featureID)
+	if err != nil {
+		return nil, errors.Wrap(err, "feature not found")
+	}
+
+	f.Annotations = annotations
+	f.LastModified = time.Now().UTC()
+	f.LastModifiedByName = "Claude Code"
+
+	s.r.StoreFeature(f)
+
+	return f, nil
 }

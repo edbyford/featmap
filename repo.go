@@ -94,6 +94,13 @@ type Repository interface {
 	FindWorkflowPersonasByProject(workspaceID string, projectID string) ([]*WorkflowPersona, error)
 	StoreWorkflowPersona(x *WorkflowPersona)
 	DeleteWorkflowPersona(workspaceID string, id string)
+
+	// API Keys
+	StoreAPIKey(x *APIKey)
+	GetAPIKeyByHash(hash string) (*APIKey, error)
+	FindAPIKeysByWorkspace(workspaceID string) ([]*APIKey, error)
+	DeleteAPIKey(workspaceID string, id string)
+	UpdateAPIKeyLastUsed(workspaceID string, id string)
 }
 
 type repo struct {
@@ -648,4 +655,36 @@ func (a *repo) StoreWorkflowPersona(x *WorkflowPersona) {
 
 func (a *repo) DeleteWorkflowPersona(workspaceID string, id string) {
 	a.tx.MustExec("DELETE FROM workflow_personas WHERE workspace_id=$1 AND id=$2", workspaceID, id)
+}
+
+// API Keys
+
+func (a *repo) StoreAPIKey(x *APIKey) {
+	a.tx.MustExec("INSERT INTO api_keys (workspace_id, id, member_id, key_hash, name, created_at, last_used_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (workspace_id, id) DO UPDATE SET name = $5, last_used_at = $7",
+		x.WorkspaceID, x.ID, x.MemberID, x.KeyHash, x.Name, x.CreatedAt, x.LastUsedAt)
+}
+
+func (a *repo) GetAPIKeyByHash(hash string) (*APIKey, error) {
+	x := &APIKey{}
+	if err := a.tx.Get(x, "SELECT * FROM api_keys WHERE key_hash = $1", hash); err != nil {
+		return nil, errors.Wrap(err, "api key not found")
+	}
+	return x, nil
+}
+
+func (a *repo) FindAPIKeysByWorkspace(workspaceID string) ([]*APIKey, error) {
+	x := []*APIKey{}
+	err := a.tx.Select(&x, "SELECT * FROM api_keys WHERE workspace_id = $1 ORDER BY created_at DESC", workspaceID)
+	if err != nil {
+		return nil, errors.Wrap(err, "no api keys found")
+	}
+	return x, nil
+}
+
+func (a *repo) DeleteAPIKey(workspaceID string, id string) {
+	a.tx.MustExec("DELETE FROM api_keys WHERE workspace_id=$1 AND id=$2", workspaceID, id)
+}
+
+func (a *repo) UpdateAPIKeyLastUsed(workspaceID string, id string) {
+	a.tx.MustExec("UPDATE api_keys SET last_used_at = NOW() WHERE workspace_id=$1 AND id=$2", workspaceID, id)
 }

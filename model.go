@@ -198,3 +198,73 @@ type WorkflowPersona struct {
 	ID          string `db:"id" json:"id"`
 	PersonaID   string `db:"persona_id" json:"personaId"`
 }
+
+// APIKey ...
+type APIKey struct {
+	WorkspaceID string     `db:"workspace_id" json:"workspaceId"`
+	ID          string     `db:"id" json:"id"`
+	MemberID    string     `db:"member_id" json:"memberId"`
+	KeyHash     string     `db:"key_hash" json:"-"`
+	Name        string     `db:"name" json:"name"`
+	CreatedAt   time.Time  `db:"created_at" json:"createdAt"`
+	LastUsedAt  *time.Time `db:"last_used_at" json:"lastUsedAt"`
+}
+
+// ClaudeInstructions provides behaviour guidance for Claude Code
+type ClaudeInstructions struct {
+	Clarification string   `json:"clarification"`
+	Workflow      string   `json:"workflow"`
+	StatusValues  []string `json:"statusValues"`
+}
+
+// ClaudeFeature is an enriched feature for Claude Code consumption
+type ClaudeFeature struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Estimate    int    `json:"estimate"`
+	Annotations string `json:"annotations"`
+	Color       string `json:"color"`
+	Priority    int    `json:"priority"`
+
+	Milestone    ClaudeMilestone    `json:"milestone"`
+	Workflow     ClaudeWorkflow     `json:"workflow"`
+	SubWorkflow  ClaudeSubWorkflow  `json:"subWorkflow"`
+	Comments     []ClaudeComment    `json:"comments"`
+}
+
+// ClaudeMilestone is milestone context for Claude
+type ClaudeMilestone struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Rank  int    `json:"rank"`
+}
+
+// ClaudeWorkflow is workflow context for Claude
+type ClaudeWorkflow struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Rank        int    `json:"rank"`
+}
+
+// ClaudeSubWorkflow is subworkflow context for Claude
+type ClaudeSubWorkflow struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// ClaudeComment is a feature comment for Claude
+type ClaudeComment struct {
+	Author string `json:"author"`
+	Text   string `json:"text"`
+	Date   string `json:"date"`
+}
+
+// ClaudeProjectResponse is the full response for Claude Code
+type ClaudeProjectResponse struct {
+	Instructions ClaudeInstructions `json:"instructions"`
+	Project      Project            `json:"project"`
+	Features     []ClaudeFeature    `json:"features"`
+}

@@ -292,3 +292,53 @@ func requireDeleteableWorkspace() func(next http.Handler) http.Handler {
 		return http.HandlerFunc(fn)
 	}
 }
+
+// RequireAPIKey validates API key authentication for Claude Code access
+func RequireAPIKey() func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		fn := func(w http.ResponseWriter, r *http.Request) {
+			s := GetEnv(r).Service
+
+			// Get API key from header
+			apiKey := r.Header.Get("X-API-Key")
+			if apiKey == "" {
+				http.Error(w, "missing X-API-Key header", 401)
+				return
+			}
+
+			// Hash the key and validate
+			keyHash := HashAPIKey(apiKey)
+			apiKeyObj, member, err := s.ValidateAPIKey(keyHash)
+			if err != nil {
+				http.Error(w, "invalid API key", 401)
+				return
+			}
+
+			// Set member context
+			s.SetMemberObject(member)
+
+			// Get and set workspace
+			ws, err := s.GetWorkspace(apiKeyObj.WorkspaceID)
+			if err != nil {
+				http.Error(w, "workspace not found", 401)
+				return
+			}
+			s.SetWorkspaceObject(ws)
+
+			// Get and set subscription
+			sub := s.GetSubscriptionByWorkspace(apiKeyObj.WorkspaceID)
+			if sub == nil {
+				http.Error(w, "no subscription found", 401)
+				return
+			}
+			s.SetSubscriptionObject(sub)
+
+			// Update last used timestamp
+			s.UpdateAPIKeyLastUsed(apiKeyObj.ID)
+
+			ctx := context.WithValue(r.Context(), contextKey, &Env{Service: s})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		}
+		return http.HandlerFunc(fn)
+	}
+}

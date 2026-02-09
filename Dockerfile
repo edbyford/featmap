@@ -1,11 +1,12 @@
 FROM golang:alpine
 WORKDIR /src
 RUN apk add --update npm git
-RUN go get -u github.com/jteeuwen/go-bindata/...
+RUN go install github.com/go-bindata/go-bindata/...@latest
 COPY ./webapp/package.json webapp/package.json
 RUN cd ./webapp && \
-    npm install
+    npm install --legacy-peer-deps
 COPY . .
+ENV NODE_OPTIONS=--openssl-legacy-provider
 RUN cd ./webapp && \
     npm run build
 RUN cd ./migrations && \
